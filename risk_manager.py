@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 import logging
+from market_analysis import MarketAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class RiskMetrics:
 class RiskManager:
     """Manages risk for the grid trading bot."""
     
-    def __init__(self, config: Dict):
+    def __init__(self, config):
         self.config = config
         self.positions: List[Position] = []
         self.risk_metrics = RiskMetrics()
@@ -41,8 +42,22 @@ class RiskManager:
         self.max_capital_used = 0.0
         self.peak_capital = 0.0
         
+        # Initialize market analyzer for volume-weighted grids (P3)
+        # Handle both dict and Config object
+        if isinstance(config, dict):
+            self.market_analyzer = MarketAnalyzer(config) if config.get('volume_weighted_grids', True) else None
+        else:
+            self.market_analyzer = MarketAnalyzer(config) if getattr(config, 'VOLUME_WEIGHTED_GRIDS', True) else None
+        
         # Load historical data if exists
         self._load_historical_data()
+    
+    def _get_config_value(self, key: str, default=None):
+        """Safely get config value from either dict or Config object."""
+        if isinstance(self.config, dict):
+            return self.config.get(key, default)
+        else:
+            return getattr(self.config, key.upper(), default)
     
     def _load_historical_data(self):
         """Load historical trading data from file."""
@@ -113,9 +128,9 @@ class RiskManager:
 
     def _get_effective_capital(self) -> float:
         """Calculate effective capital including compounded profits."""
-        base_capital = self.config['capital']
+        base_capital = self._get_config_value('capital', 250.0)
         
-        if self.config.get('compound_profits', True):
+        if self._get_config_value('compound_profits', True):
             # Add realized profits to capital base
             total_realized_pnl = sum(
                 pos.profit_loss for pos in self.positions 
@@ -261,7 +276,7 @@ class RiskManager:
 
     def _get_fallback_position_size(self, price: float, base_risk: float) -> float:
         """Get safe fallback position size on calculation errors."""
-        safe_capital = self.config['capital']
+        safe_capital = self._get_config_value('capital', 250.0)
         safe_risk = min(base_risk, 0.02)  # Cap at 2% for safety
         return (safe_capital * safe_risk) / price
     
@@ -276,7 +291,7 @@ class RiskManager:
     def check_daily_loss_limit(self) -> bool:
         """Check if daily loss limit has been reached."""
         daily_loss = abs(min(0, self.risk_metrics.daily_pnl))
-        max_daily_loss = self.config['capital'] * self.config['max_daily_loss']
+        max_daily_loss = self._get_config_value('capital', 250.0) * self._get_config_value('max_daily_loss', 0.05)
         
         if daily_loss >= max_daily_loss:
             logger.warning(f"Daily loss limit reached: {daily_loss:.2f} >= {max_daily_loss:.2f}")
@@ -293,14 +308,14 @@ class RiskManager:
                 
             if position.side == 'buy':
                 # Check if price dropped below stop loss
-                stop_loss_price = position.price * (1 - self.config['stop_loss_percent'])
+                stop_loss_price = position.price * (1 - self._get_config_value('stop_loss_percent', 0.05))
                 if current_price <= stop_loss_price:
                     positions_to_close.append(position.id)
                     logger.warning(f"Stop loss triggered for buy position {position.id} at {current_price:.2f}")
             
             elif position.side == 'sell':
                 # Check if price rose above stop loss
-                stop_loss_price = position.price * (1 + self.config['stop_loss_percent'])
+                stop_loss_price = position.price * (1 + self._get_config_value('stop_loss_percent', 0.05))
                 if current_price >= stop_loss_price:
                     positions_to_close.append(position.id)
                     logger.warning(f"Stop loss triggered for sell position {position.id} at {current_price:.2f}")
@@ -375,7 +390,7 @@ class RiskManager:
             'current_exposure': current_exposure,
             'max_drawdown': self.risk_metrics.max_drawdown,
             'session_duration_hours': session_duration / 3600,
-            'roi_percent': (self.risk_metrics.total_pnl / self.config['capital']) * 100 if self.config['capital'] > 0 else 0
+            'roi_percent': (self.risk_metrics.total_pnl / self._get_config_value('capital', 250.0)) * 100 if self._get_config_value('capital', 250.0) > 0 else 0
         }
     
     def should_continue_trading(self) -> bool:
@@ -385,29 +400,80 @@ class RiskManager:
             return False
         
         # Check if max drawdown exceeded
-        max_drawdown_limit = self.config['capital'] * 0.15  # 15% max drawdown
+        max_drawdown_limit = self._get_config_value('capital', 250.0) * 0.15  # 15% max drawdown
         if abs(self.risk_metrics.max_drawdown) > max_drawdown_limit:
             logger.warning(f"Maximum drawdown exceeded: {self.risk_metrics.max_drawdown:.2f}")
             return False
         
         return True
     
-    def get_optimal_grid_levels(self, current_price: float) -> Tuple[List[float], List[float]]:
-        """Calculate optimal grid levels with micro-grid strategy."""
-        base_grid_levels = self.config['grid_levels']
+    def get_optimal_grid_levels(self, current_price: float, api_client=None) -> Tuple[List[float], List[float]]:
+        """
+        Calculate optimal grid levels with micro-grid strategy (P1), 
+        dynamic position sizing (P2), and volume-weighted placement (P3).
+        """
+        # Phase 1: Calculate base micro-grid levels
+        buy_prices, sell_prices = self._calculate_base_grid_levels(current_price)
         
-        if self.config.get('micro_grid_mode', True):
+        # Phase 3: Apply volume-weighted adjustments if enabled and market data available
+        if (self.market_analyzer and api_client and 
+            self.config.get('volume_weighted_grids', True) and
+            self.config.get('market_depth_analysis', True)):
+            
+            try:
+                # Get market depth data
+                order_book = api_client.get_market_depth(self.config.get('trading_pair', 'SOL/USDC'))
+                
+                if order_book:
+                    # Analyze market depth
+                    analysis = self.market_analyzer.analyze_market_depth(order_book, current_price)
+                    
+                    if analysis and self.market_analyzer.is_market_suitable_for_volume_weighting(analysis):
+                        # Apply volume-weighted adjustments
+                        buy_prices = self.market_analyzer.get_volume_weighted_adjustments(
+                            buy_prices, current_price, 'buy', analysis
+                        )
+                        sell_prices = self.market_analyzer.get_volume_weighted_adjustments(
+                            sell_prices, current_price, 'sell', analysis
+                        )
+                        
+                        logger.info(f"Volume-weighted grid applied: quality={analysis.depth_quality:.3f}, "
+                                   f"imbalance={analysis.volume_imbalance:.3f}, "
+                                   f"bid_levels={len(analysis.bid_levels)}, ask_levels={len(analysis.ask_levels)}")
+                    else:
+                        logger.debug("Market conditions not suitable for volume weighting, using base grid")
+                else:
+                    logger.debug("No market depth data available, using base grid")
+                    
+            except Exception as e:
+                logger.warning(f"Volume-weighted grid calculation failed, falling back to base grid: {e}")
+        
+        # Log final strategy details
+        base_grid_levels = len(buy_prices)
+        volatility = self._calculate_recent_volatility()
+        spacing = abs(buy_prices[0] - current_price) / current_price if buy_prices else 0.01
+        
+        logger.info(f"Final grid: {base_grid_levels} levels, spacing: {spacing:.1%}, "
+                   f"volatility: {volatility:.1%}, capital: ${self._get_config_value('capital', 250.0)}")
+        
+        return buy_prices, sell_prices
+    
+    def _calculate_base_grid_levels(self, current_price: float) -> Tuple[List[float], List[float]]:
+        """Calculate base micro-grid levels (P1 implementation)."""
+        base_grid_levels = self._get_config_value('grid_levels', 5)
+        
+        if self._get_config_value('micro_grid_mode', True):
             # Calculate dynamic spacing based on volatility
             volatility = self._calculate_recent_volatility()
-            base_spacing = self.config.get('price_range_percent', 0.10) / base_grid_levels
+            base_spacing = self._get_config_value('price_range_percent', 0.10) / base_grid_levels
             
             # Small capital optimizations
-            capital = self.config['capital']
-            if capital < self.config.get('small_capital_threshold', 1000):
+            capital = self._get_config_value('capital', 250.0)
+            if capital < self._get_config_value('small_capital_threshold', 1000):
                 # Increase grid density for small capital
-                density_multiplier = self.config.get('grid_density_multiplier', 2.0)
+                density_multiplier = self._get_config_value('grid_density_multiplier', 2.0)
                 
-                if capital < self.config.get('micro_capital_threshold', 500):
+                if capital < self._get_config_value('micro_capital_threshold', 500):
                     # Extra tight spacing for micro capital
                     base_spacing *= 0.3  # 70% tighter spacing
                     density_multiplier *= 1.5  # 50% more levels
@@ -434,18 +500,14 @@ class RiskManager:
                 spacing = base_spacing
         else:
             # Original calculation for larger accounts
-            price_range = self.config['price_range_percent']
+            price_range = self._get_config_value('price_range_percent', 0.10)
             spacing = (current_price * price_range) / base_grid_levels
             grid_levels = base_grid_levels
         
-        # Generate optimized grid levels
+        # Generate base grid levels
         price_step = current_price * spacing
         buy_prices = [current_price - (i * price_step) for i in range(1, grid_levels + 1)]
         sell_prices = [current_price + (i * price_step) for i in range(1, grid_levels + 1)]
-        
-        # Log strategy details
-        logger.info(f"Micro-grid: {grid_levels} levels, spacing: {spacing:.1%}, "
-                   f"volatility: {volatility:.1%}, capital: ${self.config['capital']}")
         
         return buy_prices, sell_prices
 

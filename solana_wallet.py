@@ -45,7 +45,7 @@ class SolanaWallet:
             if not private_key:
                 raise ValueError("Private key required for software wallet")
             self.keypair = self._load_keypair(private_key)
-            self.public_key = self.keypair.public_key
+            self.public_key = self.keypair.pubkey()
         elif self.wallet_type in ["ledger", "trezor"]:
             self.hardware_wallet = HardwareWalletManager(derivation_path, self.wallet_type)
             if not self.hardware_wallet.connect():
@@ -62,7 +62,7 @@ class SolanaWallet:
         """Load keypair from private key string."""
         try:
             # Try base58 encoded private key
-            if len(private_key) == 88:  # Base58 encoded
+            if len(private_key) == 44:  # Base58 encoded
                 private_key_bytes = base58.b58decode(private_key)
             else:
                 # Try as JSON array or hex string
@@ -71,7 +71,7 @@ class SolanaWallet:
                 else:
                     private_key_bytes = bytes.fromhex(private_key)
             
-            return Keypair.from_bytes(private_key_bytes)
+            return Keypair.from_seed(private_key_bytes)
         except Exception as e:
             logger.error(f"Failed to load private key: {e}")
             raise ValueError("Invalid private key format")
@@ -86,6 +86,20 @@ class SolanaWallet:
         except Exception as e:
             logger.error(f"Failed to get balance: {e}")
             return 0.0
+    
+    def get_public_key(self) -> str:
+        """Get public key as string."""
+        return str(self.public_key)
+    
+    def sign_transaction(self, transaction):
+        """Sign a transaction with the wallet."""
+        if self.wallet_type == "software":
+            transaction.sign([self.keypair])
+            return transaction
+        elif self.wallet_type in ["ledger", "trezor"]:
+            return self.hardware_wallet.sign_transaction(transaction)
+        else:
+            raise ValueError("Unsupported wallet type")
     
     def get_token_balances(self) -> List[TokenBalance]:
         """Get all token balances."""

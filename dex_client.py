@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from solana.rpc.api import Client
 from solana.transaction import Transaction
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey as PublicKey
 from solana.rpc.commitment import Commitment
 import logging
 

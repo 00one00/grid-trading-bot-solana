@@ -52,6 +52,14 @@ class Config:
     RISK_SCALING_FACTOR = float(os.getenv('RISK_SCALING_FACTOR', '1.5'))
     SMALL_ACCOUNT_BOOST = float(os.getenv('SMALL_ACCOUNT_BOOST', '1.2'))
     
+    # Volume-Weighted Grid Configuration (Phase 2 P3)
+    VOLUME_WEIGHTED_GRIDS = bool(os.getenv('VOLUME_WEIGHTED_GRIDS', 'True'))
+    MARKET_DEPTH_ANALYSIS = bool(os.getenv('MARKET_DEPTH_ANALYSIS', 'True'))
+    VOLUME_ADJUSTMENT_TOLERANCE = float(os.getenv('VOLUME_ADJUSTMENT_TOLERANCE', '0.02'))  # 2% max adjustment
+    MARKET_ANALYSIS_CACHE_DURATION = int(os.getenv('MARKET_ANALYSIS_CACHE_DURATION', '30'))  # seconds
+    MIN_VOLUME_STRENGTH = float(os.getenv('MIN_VOLUME_STRENGTH', '0.3'))  # 0-1 confidence threshold
+    MIN_DEPTH_QUALITY = float(os.getenv('MIN_DEPTH_QUALITY', '0.3'))  # 0-1 quality threshold
+    
     # Performance Settings
     CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', '60'))  # seconds
     RETRY_DELAY = int(os.getenv('RETRY_DELAY', '300'))  # seconds
@@ -117,5 +125,11 @@ class Config:
             'win_rate_threshold_high': cls.WIN_RATE_THRESHOLD_HIGH,
             'win_rate_threshold_low': cls.WIN_RATE_THRESHOLD_LOW,
             'risk_scaling_factor': cls.RISK_SCALING_FACTOR,
-            'small_account_boost': cls.SMALL_ACCOUNT_BOOST
+            'small_account_boost': cls.SMALL_ACCOUNT_BOOST,
+            'volume_weighted_grids': cls.VOLUME_WEIGHTED_GRIDS,
+            'market_depth_analysis': cls.MARKET_DEPTH_ANALYSIS,
+            'volume_adjustment_tolerance': cls.VOLUME_ADJUSTMENT_TOLERANCE,
+            'market_analysis_cache_duration': cls.MARKET_ANALYSIS_CACHE_DURATION,
+            'min_volume_strength': cls.MIN_VOLUME_STRENGTH,
+            'min_depth_quality': cls.MIN_DEPTH_QUALITY
         } 
