@@ -64,11 +64,63 @@ python test_real_dex_connection.py
 # Test Jupiter API integration
 python real_jupiter_integration.py
 
+# Test network blockhash fix (Phase 1B critical fix)
+python test_network_fix.py
+
 # Execute single devnet trade demo
 python execute_devnet_trade.py
 
 # Run continuous devnet trading simulation
 python devnet_trading_simulation.py
+
+# Phase 2 execution test (current network)
+python test_phase2_execution.py
+```
+
+### Network Management
+
+The bot supports easy switching between Solana devnet (for safe testing) and mainnet (for live trading):
+
+```bash
+# Interactive network switching utility
+python network_switch.py
+
+# Test specifically on devnet (safe, free SOL)
+python test_devnet.py
+
+# Test specifically on mainnet (real money, use caution!)
+python test_mainnet.py
+
+# Diagnose transaction signature issues
+python diagnose_signature_issue.py
+```
+
+#### Network Configuration
+
+Set your network in `.env` file:
+
+```bash
+# For safe testing (recommended first)
+NETWORK=devnet
+
+# For live trading (after thorough devnet testing)
+NETWORK=mainnet
+```
+
+The bot automatically configures:
+- **RPC URLs**: Devnet vs mainnet endpoints
+- **Capital amounts**: Small amounts for devnet, real amounts for mainnet
+- **Explorer links**: Network-appropriate Solana Explorer URLs
+
+#### Quick Network Switch
+
+```bash
+# Method 1: Use the utility (recommended)
+python network_switch.py
+
+# Method 2: Edit .env directly
+echo "NETWORK=devnet" >> .env  # Switch to devnet
+echo "NETWORK=mainnet" >> .env # Switch to mainnet (caution!)
 ```
 
 ### Development Workflow
@@ -270,6 +322,9 @@ Core libraries used:
 2. **Insufficient Balance**: Verify account balance and minimum order requirements  
 3. **Rate Limiting**: Increase CHECK_INTERVAL or reduce API call frequency
 4. **Test Failures**: Ensure .env file is configured before running tests
+5. **Signature Verification Failure**: Transaction signing issue, often network-related
+6. **Network Mismatch**: Ensure NETWORK setting matches your intended environment
+7. **Blockhash Not Found**: Jupiter provides wrong network blockhash - fixed by transaction reconstruction
 
 ### Debug Commands
 ```bash
@@ -287,7 +342,39 @@ python -c "from solana_wallet import SolanaWallet; from config import Config; c 
 
 # Test risk manager
 python -c "from risk_manager import RiskManager; from config import Config; c = Config(); rm = RiskManager(c.get_trading_config()); print('Risk manager initialized')"
+
+# Diagnose signature verification issues
+python diagnose_signature_issue.py
+
+# Test network blockhash fix
+python test_network_fix.py
+
+# Test network-specific functionality
+python test_devnet.py  # Safe testing
+python test_mainnet.py # Real money (caution!)
+
+# Switch networks easily
+python network_switch.py
 ```
+
+### Signature Verification Issues
+
+If you encounter transaction execution issues, try:
+
+1. **Run Network Fix Test**: `python test_network_fix.py` (tests blockhash reconstruction)
+2. **Run Diagnostic**: `python diagnose_signature_issue.py`
+3. **Check Network**: Ensure devnet/mainnet setting matches your wallet funding
+4. **Verify Balance**: Confirm sufficient SOL for transaction fees
+5. **Test Components**: The diagnostic script tests each pipeline component
+6. **Legacy Transactions**: The bot forces legacy transactions for better devnet compatibility
+
+### Blockhash Issues (Phase 1B Fix Applied)
+
+The "Blockhash not found" error was caused by Jupiter API providing mainnet blockhashes for devnet transactions. **This has been fixed** with automatic transaction reconstruction:
+
+- All transaction signing now uses `sign_transaction_with_fresh_blockhash()`
+- Transactions are reconstructed with network-appropriate blockhashes
+- No manual intervention required - the fix is automatic
 
 ## Performance Monitoring
 

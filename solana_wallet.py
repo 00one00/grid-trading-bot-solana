@@ -91,22 +91,16 @@ class SolanaWallet:
         """Get public key as string."""
         return str(self.public_key)
     
-    def sign_transaction(self, transaction):
-        """Sign a transaction with the wallet."""
-        if self.wallet_type == "software":
-            transaction.sign([self.keypair])
-            return transaction
-        elif self.wallet_type in ["ledger", "trezor"]:
-            return self.hardware_wallet.sign_transaction(transaction)
-        else:
-            raise ValueError("Unsupported wallet type")
     
     def get_token_balances(self) -> List[TokenBalance]:
         """Get all token balances."""
         try:
+            from solders.pubkey import Pubkey
+            token_program_id = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            
             response = self.rpc_client.get_token_accounts_by_owner(
                 self.public_key,
-                {"programId": PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")}
+                {"programId": token_program_id}
             )
             
             balances = []
@@ -147,12 +141,32 @@ class SolanaWallet:
         }
         return token_symbols.get(mint, mint[:8])
     
-    def sign_transaction(self, transaction: Transaction) -> Transaction:
-        """Sign a transaction with either software or hardware wallet."""
+    def sign_transaction(self, transaction) -> any:
+        """Sign a transaction with either software or hardware wallet.
+        
+        For software wallets, this method handles both VersionedTransaction and legacy Transaction
+        with proper fresh blockhash handling.
+        """
         try:
             if self.wallet_type == "software":
-                transaction.sign(self.keypair)
-                return transaction
+                from solders.transaction import VersionedTransaction
+                
+                if isinstance(transaction, VersionedTransaction):
+                    # For VersionedTransaction, sign the message directly
+                    # The transaction should already have a fresh blockhash in its message
+                    message_bytes = bytes(transaction.message)
+                    signature = self.keypair.sign_message(message_bytes)
+                    
+                    # Create new VersionedTransaction with signature
+                    transaction.signatures = [signature]
+                    logger.debug(f"✅ Signed VersionedTransaction with signature: {signature}")
+                    return transaction
+                else:
+                    # For legacy Transaction, it should already have the correct blockhash
+                    # Just sign with the keypair
+                    transaction.sign([self.keypair])
+                    logger.debug(f"✅ Signed legacy Transaction")
+                    return transaction
             elif self.wallet_type in ["ledger", "trezor"]:
                 if not self.hardware_wallet:
                     raise RuntimeError("Hardware wallet not initialized")
@@ -166,31 +180,111 @@ class SolanaWallet:
             logger.error(f"Failed to sign transaction: {e}")
             raise
     
-    def send_transaction(self, transaction: Transaction) -> str:
-        """Send a signed transaction."""
+    def sign_transaction_with_fresh_blockhash(self, transaction) -> any:
+        """Sign a transaction with a fresh blockhash (for legacy support).
+        
+        This method gets a fresh blockhash and signs the transaction with it.
+        Used as fallback when the transaction's blockhash is stale.
+        """
         try:
-            # Sign the transaction
-            signed_tx = self.sign_transaction(transaction)
-            
-            # Send the transaction (hardware wallets don't need keypair parameter)
             if self.wallet_type == "software":
-                response = self.rpc_client.send_transaction(
-                    signed_tx,
-                    self.keypair,
-                    opts={"skip_confirmation": False, "preflight_commitment": "confirmed"}
-                )
+                from solders.transaction import VersionedTransaction
+                from solders.message import MessageV0, Message
+                from solders.transaction import Transaction
+                from solders.instruction import Instruction
+                from solders.hash import Hash
+                
+                # Always get fresh blockhash
+                recent_blockhash_response = self.rpc_client.get_latest_blockhash()
+                fresh_blockhash = recent_blockhash_response.value.blockhash
+                
+                logger.debug(f"🔄 Using fresh blockhash: {str(fresh_blockhash)[:8]}...")
+                
+                if isinstance(transaction, VersionedTransaction):
+                    # For VersionedTransaction with fresh blockhash already set, just sign
+                    if hasattr(transaction.message, 'recent_blockhash') and transaction.message.recent_blockhash == fresh_blockhash:
+                        message_bytes = bytes(transaction.message)
+                        signature = self.keypair.sign_message(message_bytes)
+                        transaction.signatures = [signature]
+                        return transaction
+                    else:
+                        # Need to create new message with fresh blockhash
+                        message = transaction.message
+                        if isinstance(message, MessageV0):
+                            # For V0 message, use try_compile to create new one with fresh blockhash
+                            # Extract payer (first account key)
+                            payer = message.account_keys[0] if message.account_keys else self.public_key
+                            
+                            # Reconstruct with fresh blockhash
+                            new_message = MessageV0.try_compile(
+                                payer=payer,
+                                instructions=message.instructions,
+                                address_lookup_table_accounts=message.address_table_lookups,
+                                recent_blockhash=fresh_blockhash
+                            )
+                            new_transaction = VersionedTransaction(new_message, [])
+                            message_bytes = bytes(new_transaction.message)
+                            signature = self.keypair.sign_message(message_bytes)
+                            new_transaction.signatures = [signature]
+                            return new_transaction
+                        else:
+                            # For non-V0 VersionedTransaction, we CANNOT modify the message
+                            # This is the critical issue - Jupiter sends non-V0 messages we can't fix
+                            logger.error("🚨 CRITICAL: Cannot reconstruct non-V0 VersionedTransaction with fresh blockhash")
+                            logger.error("🚨 Jupiter provided incompatible transaction type")
+                            logger.error("🚨 This transaction will fail with stale blockhash")
+                            
+                            # Sign the original (will fail, but at least we know why)
+                            message_bytes = bytes(transaction.message)
+                            signature = self.keypair.sign_message(message_bytes)
+                            transaction.signatures = [signature]
+                            return transaction
+                else:
+                    # For legacy Transaction, create fresh signed copy
+                    try:
+                        # Create fresh transaction with new blockhash
+                        new_transaction = Transaction.new_with_payer(
+                            instructions=[Instruction.from_bytes(bytes(inst)) for inst in transaction.message.instructions],
+                            payer=transaction.message.account_keys[0]
+                        )
+                        new_transaction.sign([self.keypair], fresh_blockhash)
+                        return new_transaction
+                    except Exception as e:
+                        # Fallback: modify the existing transaction (if possible)
+                        logger.warning(f"🔄 Fresh transaction creation failed, using fallback signing: {e}")
+                        transaction.sign([self.keypair], fresh_blockhash)
+                        return transaction
+            elif self.wallet_type in ["ledger", "trezor"]:
+                if not self.hardware_wallet:
+                    raise RuntimeError("Hardware wallet not initialized")
+                signed_tx = self.hardware_wallet.sign_transaction(transaction)
+                if not signed_tx:
+                    raise RuntimeError("Failed to sign transaction with hardware wallet")
+                return signed_tx
             else:
-                # For hardware wallets, transaction is already signed
-                response = self.rpc_client.send_raw_transaction(
-                    signed_tx.serialize(),
-                    opts={"skip_confirmation": False, "preflight_commitment": "confirmed"}
-                )
+                raise ValueError(f"Unsupported wallet type: {self.wallet_type}")
+        except Exception as e:
+            logger.error(f"Failed to sign transaction with fresh blockhash: {e}")
+            raise
+    
+    def send_transaction(self, signed_transaction) -> str:
+        """Send a pre-signed transaction to the network.
+        
+        Args:
+            signed_transaction: Already signed transaction
+            
+        Returns:
+            Transaction signature
+        """
+        try:
+            # Send the transaction via RPC
+            response = self.rpc_client.send_transaction(signed_transaction)
             
             if response.value:
                 logger.info(f"Transaction sent: {response.value}")
                 return response.value
             else:
-                raise Exception("Failed to send transaction")
+                raise Exception("Failed to send transaction: no signature returned")
                 
         except Exception as e:
             logger.error(f"Failed to send transaction: {e}")

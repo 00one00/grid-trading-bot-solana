@@ -8,11 +8,43 @@ load_dotenv()
 class Config:
     """Configuration class for the grid trading bot."""
     
+    # Network Configuration
+    NETWORK = os.getenv('NETWORK', 'devnet').lower()  # 'devnet' or 'mainnet'
+    
+    # RPC URL Configuration (network-aware)
+    DEVNET_RPC_URL = os.getenv('DEVNET_RPC_URL', 'https://api.devnet.solana.com')
+    MAINNET_RPC_URL = os.getenv('MAINNET_RPC_URL', 'https://api.mainnet-beta.solana.com')
+    
+    @property
+    def RPC_URL(self):
+        """Get RPC URL based on network selection."""
+        custom_rpc = os.getenv('RPC_URL')
+        if custom_rpc:
+            return custom_rpc
+        return self.DEVNET_RPC_URL if self.NETWORK == 'devnet' else self.MAINNET_RPC_URL
+    
+    @property
+    def is_devnet(self):
+        """Check if running on devnet."""
+        return self.NETWORK == 'devnet'
+    
+    @property
+    def is_mainnet(self):
+        """Check if running on mainnet."""
+        return self.NETWORK == 'mainnet'
+    
+    @property
+    def explorer_url(self):
+        """Get Solana Explorer URL for current network."""
+        if self.is_devnet:
+            return "https://explorer.solana.com/tx/{signature}?cluster=devnet"
+        else:
+            return "https://explorer.solana.com/tx/{signature}"
+    
     # Wallet Configuration (for DEX trading)
     WALLET_TYPE = os.getenv('WALLET_TYPE', 'software')  # 'software', 'ledger', 'trezor'
     PRIVATE_KEY = os.getenv('PRIVATE_KEY', '') if os.getenv('WALLET_TYPE', 'software') == 'software' else None
     HARDWARE_DERIVATION_PATH = os.getenv('HARDWARE_DERIVATION_PATH', "44'/501'/0'/0'")
-    RPC_URL = os.getenv('RPC_URL', 'https://api.mainnet-beta.solana.com')
     
     # API Configuration (for centralized exchanges - optional)
     API_KEY = os.getenv('API_KEY', '')
@@ -21,7 +53,19 @@ class Config:
     
     # Trading Parameters
     TRADING_PAIR = os.getenv('TRADING_PAIR', 'SOL/USDC')
-    CAPITAL = float(os.getenv('CAPITAL', '250.0'))
+    
+    # Capital Configuration (network-aware)
+    DEVNET_CAPITAL = float(os.getenv('DEVNET_CAPITAL', '0.1'))
+    MAINNET_CAPITAL = float(os.getenv('MAINNET_CAPITAL', '250.0'))
+    
+    @property
+    def CAPITAL(self):
+        """Get capital based on network selection."""
+        custom_capital = os.getenv('CAPITAL')
+        if custom_capital:
+            return float(custom_capital)
+        return self.DEVNET_CAPITAL if self.NETWORK == 'devnet' else self.MAINNET_CAPITAL
+    
     GRID_LEVELS = int(os.getenv('GRID_LEVELS', '5'))
     PRICE_RANGE_PERCENT = float(os.getenv('PRICE_RANGE_PERCENT', '0.10'))
     RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '0.02'))
